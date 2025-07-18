@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 
 # Copyright (c) 2020-2023, NVIDIA CORPORATION.  All rights reserved.
-# 
+#
 # Redistribution and use in source and binary forms, with or without modification, are permitted
 # provided that the following conditions are met:
 #     * Redistributions of source code must retain the above copyright notice, this list of
@@ -12,7 +12,7 @@
 #     * Neither the name of the NVIDIA CORPORATION nor the names of its contributors may be used
 #       to endorse or promote products derived from this software without specific prior written
 #       permission.
-# 
+#
 # THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR
 # IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND
 # FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL NVIDIA CORPORATION BE LIABLE
@@ -34,6 +34,11 @@ import os
 import sys
 import torch
 import time
+
+import cupy as cp
+import sigpy as sp
+from sigpy import mri as mri
+from skimage.metrics import peak_signal_noise_ratio as psnr
 
 try:
 	import tinycudann as tcnn
@@ -88,13 +93,14 @@ def get_args():
 
 	parser.add_argument("image", nargs="?", default="data/images/albert.jpg", help="Image to match")
 	parser.add_argument("config", nargs="?", default="data/config_hash.json", help="JSON config for tiny-cuda-nn")
-	parser.add_argument("n_steps", nargs="?", type=int, default=10000000, help="Number of training steps")
-	parser.add_argument("result_filename", nargs="?", default="", help="Number of training steps")
+	parser.add_argument("n_steps", nargs="?", type=int, default=2000, help="Number of training steps")
+	parser.add_argument("result_filename", nargs="?", default="../samples/results.jpg", help="Number of training steps")
 
 	args = parser.parse_args()
 	return args
 
-if __name__ == "__main__":
+import copy
+def spawn(levels, log_hash = 12):
 	print("================================================================")
 	print("This script replicates the behavior of the native CUDA example  ")
 	print("mlp_learning_an_image.cu using tiny-cuda-nn's PyTorch extension.")
@@ -111,6 +117,13 @@ if __name__ == "__main__":
 	image = Image(args.image, device)
 	n_channels = image.data.shape[2]
 
+	config = copy.deepcopy(config)
+	sum = 0.0
+	for i in range(levels):
+		sum = sum + 2 ** (8 - (i - 1))
+	config['encoding']['log2_hashmap_size'] = np.log(config['encoding']['n_features_per_level'] * sum ** 2)/np.log(2) - 4
+	config['encoding']['n_levels'] = levels
+	config['encoding']['base_resolution'] = 256 / (2 ** (8 - (levels)))
 	model = tcnn.NetworkWithInputEncoding(n_input_dims=2, n_output_dims=n_channels, encoding_config=config["encoding"], network_config=config["network"]).to(device)
 	print(model)
 
@@ -157,11 +170,17 @@ if __name__ == "__main__":
 		print(f"WARNING: PyTorch JIT trace failed. Performance will be slightly worse than regular.")
 		traced_image = image
 
+	#ktraj =  torch.tensor(mri.radial([10000, 256, 2], [256, 192]))
+
 	for i in range(args.n_steps):
+		idx = torch.randint(0, 10000, [batch_size])
 		batch = torch.rand([batch_size, 2], device=device, dtype=torch.float32)
 		targets = traced_image(batch)
 		output = model(batch)
 
+		#A = sp.linop.NUFFT([batch_size, 256, 192], ktraj[idx])
+		#dcf = torch.tensor(((ktraj[idx, ..., 0:1] ** 2.0 + ktraj[idx, ..., 1:2] ** 2.0) ** 0.5)).to(0)
+		#A = sp.to_pytorch_function(A, input_iscomplex=True, output_iscomplex=True)
 		relative_l2_error = (output - targets.to(output.dtype))**2 / (output.detach()**2 + 0.01)
 		loss = relative_l2_error.mean()
 
@@ -188,9 +207,20 @@ if __name__ == "__main__":
 				interval *= 10
 
 	if args.result_filename:
-		print(f"Writing '{args.result_filename}'... ", end="")
+		print(f"Writing '{args.result_filename.replace('.jpg', '_num_levels_'+ str(levels) + '.jpg')}'... ", end="")
 		with torch.no_grad():
-			write_image(args.result_filename, model(xy).reshape(img_shape).clamp(0.0, 1.0).detach().cpu().numpy())
+			write_image(args.result_filename.replace('.jpg', '_num_levels_'+ str(levels) + '.jpg'), model(xy).reshape(img_shape).clamp(0.0, 1.0).detach().cpu().numpy())
 		print("done.")
 
+	psnr_ref = psnr(model(xy).reshape(img_shape).clamp(0.0, 1.0).detach().cpu().numpy(), image(xy).reshape(img_shape).detach().cpu().numpy(), data_range=torch.max(image(xy)).detach().cpu().numpy() - torch.min(image(xy)).detach().cpu().numpy())
 	tcnn.free_temporary_memory()
+	return psnr_ref
+
+from pathos.multiprocessing import ProcessingPool as Pool
+if __name__ == "__main__":
+	with Pool(8) as p:
+		psnrs = p.map(spawn, [1, 2, 3, 4, 5, 6, 7, 8])
+		p.wait()
+		p.join()
+
+	print(psnrs)

@@ -19,8 +19,34 @@
 # OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
 # STRICT LIABILITY, OR TOR (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+# Force use of MSVC linker tools (not MinGW) for CUDA
 
 cmake_minimum_required(VERSION 3.18)
+
+if (WIN32)
+	# Paths for MSVC
+	set(MSVC_BIN_DIR "C:/Program Files (x86)/Microsoft Visual Studio/2017/Professional/VC/Tools/MSVC/14.16.27023/bin/Hostx64/x64")
+	set(MSVC_LIB_DIR "C:/Program Files (x86)/Microsoft Visual Studio/2017/Professional/VC/Tools/MSVC/14.16.27023/lib/x64")
+
+	# Paths for Windows SDK
+	set(WIN_SDK_VER "10.0.19041.0")
+	set(WIN_SDK_ROOT "C:/Program Files (x86)/Windows Kits/10")
+	set(WIN_SDK_BIN_DIR "${WIN_SDK_ROOT}/bin/${WIN_SDK_VER}/x64")
+	set(WIN_SDK_UM_LIB_DIR "${WIN_SDK_ROOT}/Lib/${WIN_SDK_VER}/um/x64")
+	set(WIN_SDK_UCRT_LIB_DIR "${WIN_SDK_ROOT}/Lib/${WIN_SDK_VER}/ucrt/x64")
+
+	# Add tools and libraries to environment
+	set(ENV{PATH} "${MSVC_BIN_DIR};${WIN_SDK_BIN_DIR};${MSVC_LIB_DIR};${WIN_SDK_UM_LIB_DIR};${WIN_SDK_UCRT_LIB_DIR};$ENV{PATH}")
+	set(ENV{LIB} "${MSVC_LIB_DIR};${WIN_SDK_UM_LIB_DIR};${WIN_SDK_UCRT_LIB_DIR};$ENV{LIB}")
+
+	# Tell CMake about manifest and resource tools
+	set(CMAKE_MT "${WIN_SDK_BIN_DIR}/mt.exe" CACHE FILEPATH "Manifest Tool" FORCE)
+	set(CMAKE_RC "${WIN_SDK_BIN_DIR}/rc.exe" CACHE FILEPATH "Resource Compiler" FORCE)
+
+	# Include directories for headers
+	include_directories("${WIN_SDK_ROOT}/Include/${WIN_SDK_VER}/ucrt")
+	include_directories("${WIN_SDK_ROOT}/Include/${WIN_SDK_VER}/um")
+endif()
 
 project(
 	tiny-cuda-nn
@@ -33,7 +59,7 @@ option(TCNN_BUILD_BENCHMARK "Build tiny-cuda-nn example benchmark?" ON)
 option(TCNN_BUILD_EXAMPLES "Build tiny-cuda-nn example applications?" ON)
 option(TCNN_ALLOW_CUBLAS_CUSOLVER "Allows tiny-cuda-nn to use cuBLAS and cuSolver. Only required for the Shampoo optimizer." OFF)
 set(TCNN_CUDA_ARCHITECTURES "" CACHE STRING "Build tiny-cuda-nn for a specific GPU architecture.")
-
+# Force NVCC to use the correct MSVC compiler path
 ###############################################################################
 # Build type and C++ compiler setup
 ###############################################################################
@@ -80,6 +106,7 @@ endif()
 # Adapted from the CMake source code at https://github.com/Kitware/CMake/blob/master/Modules/FindCUDA/select_compute_arch.cmake
 # Simplified to return a semicolon-separated list of the compute capabilities of installed devices
 function(TCNN_AUTODETECT_CUDA_ARCHITECTURES OUT_VARIABLE)
+
 	if (NOT TCNN_AUTODETECT_CUDA_ARCHITECTURES_OUTPUT)
 		if (CMAKE_CUDA_COMPILER_LOADED) # CUDA as a language
 			set(file "${PROJECT_BINARY_DIR}/detect_tcnn_cuda_architectures.cu")
@@ -119,6 +146,7 @@ function(TCNN_AUTODETECT_CUDA_ARCHITECTURES OUT_VARIABLE)
 	else()
 		set(${OUT_VARIABLE} ${TCNN_AUTODETECT_CUDA_ARCHITECTURES_OUTPUT} PARENT_SCOPE)
 	endif()
+	set(${OUT_VARIABLE} "80;86" PARENT_SCOPE)
 endfunction()
 
 set(CMAKE_CUDA_STANDARD 14)
