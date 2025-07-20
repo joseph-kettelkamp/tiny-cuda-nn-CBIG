@@ -1,4 +1,4 @@
-# Copyright (c) 2020-2023, NVIDIA CORPORATION.  All rights reserved.
+# Copyright (c) 2020-2025, NVIDIA CORPORATION.  All rights reserved.
 # 
 # Redistribution and use in source and binary forms, with or without modification, are permitted
 # provided that the following conditions are met:
@@ -19,47 +19,29 @@
 # OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
 # STRICT LIABILITY, OR TOR (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-# Force use of MSVC linker tools (not MinGW) for CUDA
 
 cmake_minimum_required(VERSION 3.18)
 
-if (WIN32)
-	# Paths for MSVC
-	set(MSVC_BIN_DIR "C:/Program Files (x86)/Microsoft Visual Studio/2017/Professional/VC/Tools/MSVC/14.16.27023/bin/Hostx64/x64")
-	set(MSVC_LIB_DIR "C:/Program Files (x86)/Microsoft Visual Studio/2017/Professional/VC/Tools/MSVC/14.16.27023/lib/x64")
-
-	# Paths for Windows SDK
-	set(WIN_SDK_VER "10.0.19041.0")
-	set(WIN_SDK_ROOT "C:/Program Files (x86)/Windows Kits/10")
-	set(WIN_SDK_BIN_DIR "${WIN_SDK_ROOT}/bin/${WIN_SDK_VER}/x64")
-	set(WIN_SDK_UM_LIB_DIR "${WIN_SDK_ROOT}/Lib/${WIN_SDK_VER}/um/x64")
-	set(WIN_SDK_UCRT_LIB_DIR "${WIN_SDK_ROOT}/Lib/${WIN_SDK_VER}/ucrt/x64")
-
-	# Add tools and libraries to environment
-	set(ENV{PATH} "${MSVC_BIN_DIR};${WIN_SDK_BIN_DIR};${MSVC_LIB_DIR};${WIN_SDK_UM_LIB_DIR};${WIN_SDK_UCRT_LIB_DIR};$ENV{PATH}")
-	set(ENV{LIB} "${MSVC_LIB_DIR};${WIN_SDK_UM_LIB_DIR};${WIN_SDK_UCRT_LIB_DIR};$ENV{LIB}")
-
-	# Tell CMake about manifest and resource tools
-	set(CMAKE_MT "${WIN_SDK_BIN_DIR}/mt.exe" CACHE FILEPATH "Manifest Tool" FORCE)
-	set(CMAKE_RC "${WIN_SDK_BIN_DIR}/rc.exe" CACHE FILEPATH "Resource Compiler" FORCE)
-
-	# Include directories for headers
-	include_directories("${WIN_SDK_ROOT}/Include/${WIN_SDK_VER}/ucrt")
-	include_directories("${WIN_SDK_ROOT}/Include/${WIN_SDK_VER}/um")
-endif()
-
 project(
 	tiny-cuda-nn
-	VERSION 1.7
+	VERSION 2.0
 	DESCRIPTION "Lightning fast & tiny C++/CUDA neural network framework"
 	LANGUAGES CXX CUDA
 )
 
+option(TCNN_ALLOW_CUBLAS_CUSOLVER "Allows tiny-cuda-nn to use cuBLAS and cuSolver. Only required for the Shampoo optimizer." OFF)
 option(TCNN_BUILD_BENCHMARK "Build tiny-cuda-nn example benchmark?" ON)
 option(TCNN_BUILD_EXAMPLES "Build tiny-cuda-nn example applications?" ON)
-option(TCNN_ALLOW_CUBLAS_CUSOLVER "Allows tiny-cuda-nn to use cuBLAS and cuSolver. Only required for the Shampoo optimizer." OFF)
+option(TCNN_BUILD_NO_FWD_BWD "Build without offline compiled forward and backward kernels?" OFF)
+option(TCNN_BUILD_TESTS "Build tiny-cuda-nn's tests?" OFF)
+option(TCNN_BUILD_WITH_RTC "Build support for runtime compilation of fully fused kernels?" ON)
+option(TCNN_BUILD_USE_FAST_MATH "Build tiny-cuda-nn with '--use_fast_math' option?" ON)
+
+set(TCNN_EXTERNAL_FMT "" CACHE STRING "If non-empty, the `fmt` target is supplied externally with the given name.")
+
 set(TCNN_CUDA_ARCHITECTURES "" CACHE STRING "Build tiny-cuda-nn for a specific GPU architecture.")
-# Force NVCC to use the correct MSVC compiler path
+option(TCNN_LINK_CUDA "Link tiny-cuda-nn to CUDA libraries?" ON)
+
 ###############################################################################
 # Build type and C++ compiler setup
 ###############################################################################
@@ -81,6 +63,11 @@ endif()
 
 if (APPLE)
 	set(CMAKE_MACOSX_RPATH ON)
+endif()
+
+if (CMAKE_EXPORT_COMPILE_COMMANDS)
+    set(CMAKE_CXX_STANDARD_INCLUDE_DIRECTORIES ${CMAKE_CXX_IMPLICIT_INCLUDE_DIRECTORIES})
+    set(CMAKE_CUDA_STANDARD_INCLUDE_DIRECTORIES ${CMAKE_CUDA_IMPLICIT_INCLUDE_DIRECTORIES})
 endif()
 
 if (MSVC)
@@ -106,7 +93,6 @@ endif()
 # Adapted from the CMake source code at https://github.com/Kitware/CMake/blob/master/Modules/FindCUDA/select_compute_arch.cmake
 # Simplified to return a semicolon-separated list of the compute capabilities of installed devices
 function(TCNN_AUTODETECT_CUDA_ARCHITECTURES OUT_VARIABLE)
-
 	if (NOT TCNN_AUTODETECT_CUDA_ARCHITECTURES_OUTPUT)
 		if (CMAKE_CUDA_COMPILER_LOADED) # CUDA as a language
 			set(file "${PROJECT_BINARY_DIR}/detect_tcnn_cuda_architectures.cu")
@@ -146,7 +132,6 @@ function(TCNN_AUTODETECT_CUDA_ARCHITECTURES OUT_VARIABLE)
 	else()
 		set(${OUT_VARIABLE} ${TCNN_AUTODETECT_CUDA_ARCHITECTURES_OUTPUT} PARENT_SCOPE)
 	endif()
-	set(${OUT_VARIABLE} "80;86" PARENT_SCOPE)
 endfunction()
 
 set(CMAKE_CUDA_STANDARD 14)
@@ -174,8 +159,10 @@ elseif (CUDA_VERSION VERSION_LESS 11.1)
 	set(LATEST_SUPPORTED_CUDA_ARCHITECTURE 80)
 elseif (CUDA_VERSION VERSION_LESS 11.8)
 	set(LATEST_SUPPORTED_CUDA_ARCHITECTURE 86)
-else()
+elseif (CUDA_VERSION VERSION_LESS 12.8)
 	set(LATEST_SUPPORTED_CUDA_ARCHITECTURE 90)
+else()
+	set(LATEST_SUPPORTED_CUDA_ARCHITECTURE 120)
 endif()
 
 if (CUDA_VERSION VERSION_GREATER_EQUAL 12.0)
@@ -230,17 +217,44 @@ if (CUDA_VERSION VERSION_LESS 10.2)
 	message(FATAL_ERROR "CUDA version too low. tiny-cuda-nn require CUDA 10.2 or higher.")
 endif()
 
-list(APPEND TCNN_LIBRARIES cuda)
-list(APPEND TCNN_DEFINITIONS -DTCNN_MIN_GPU_ARCH=${MIN_GPU_ARCH})
-if (TCNN_ALLOW_CUBLAS_CUSOLVER AND CUDA_VERSION VERSION_GREATER_EQUAL 11.0)
-	# Only compile the shampoo optimizer if
-	# a new enough cuBLAS version is available.
-	list(APPEND TCNN_LIBRARIES cublas)
-	list(APPEND TCNN_DEFINITIONS -DTCNN_SHAMPOO)
-endif()
+list(APPEND TCNN_INCLUDES "include")
 
 if (TCNN_HAS_PARENT)
 	set(TCNN_DEFINITIONS ${TCNN_DEFINITIONS} PARENT_SCOPE)
+endif()
+
+# Only compile the shampoo optimizer if
+# a recent enough cuBLAS version is available.
+if (TCNN_ALLOW_CUBLAS_CUSOLVER AND CUDA_VERSION VERSION_GREATER_EQUAL 11.0)
+	set(TCNN_BUILD_WITH_SHAMPOO ON)
+else()
+	set(TCNN_BUILD_WITH_SHAMPOO OFF)
+endif()
+
+if (TCNN_BUILD_WITH_SHAMPOO)
+	list(APPEND TCNN_DEFINITIONS -DTCNN_SHAMPOO)
+endif()
+
+if (TCNN_BUILD_WITH_RTC)
+	list(APPEND TCNN_DEFINITIONS -DTCNN_RTC)
+endif()
+
+if (TCNN_BUILD_USE_FAST_MATH)
+	list(APPEND TCNN_DEFINITIONS -DTCNN_RTC_USE_FAST_MATH)
+endif()
+
+if (TCNN_BUILD_NO_FWD_BWD)
+	list(APPEND TCNN_DEFINITIONS -DTCNN_NO_FWD_BWD)
+endif()
+
+if (TCNN_LINK_CUDA)
+	list(APPEND TCNN_LIBRARIES cuda)
+	if (TCNN_BUILD_WITH_SHAMPOO)
+		list(APPEND TCNN_LIBRARIES cublas)
+	endif()
+	if (TCNN_BUILD_WITH_RTC)
+		list(APPEND TCNN_LIBRARIES nvrtc)
+	endif()
 endif()
 
 if (MSVC)
@@ -249,6 +263,9 @@ else()
 	list(APPEND CUDA_NVCC_FLAGS "-Xcompiler=-Wno-float-conversion")
 	list(APPEND CUDA_NVCC_FLAGS "-Xcompiler=-fno-strict-aliasing")
 	list(APPEND CUDA_NVCC_FLAGS "-Xcudafe=--diag_suppress=unrecognized_gcc_pragma")
+endif()
+if (TCNN_BUILD_USE_FAST_MATH)
+	list(APPEND CUDA_NVCC_FLAGS "--use_fast_math")
 endif()
 list(APPEND CUDA_NVCC_FLAGS "--extended-lambda")
 list(APPEND CUDA_NVCC_FLAGS "--expt-relaxed-constexpr")
@@ -263,7 +280,14 @@ if (NOT MSVC)
 endif()
 
 set(BUILD_SHARED_LIBS OFF)
-add_subdirectory("dependencies/fmt")
+
+if (TCNN_EXTERNAL_FMT)
+	list(APPEND TCNN_LIBRARIES "${TCNN_EXTERNAL_FMT}")
+else()
+	add_subdirectory("dependencies/fmt")
+	list(APPEND TCNN_LIBRARIES fmt)
+	list(APPEND TCNN_INCLUDES "dependencies/fmt/include")
+endif()
 
 ###############################################################################
 # tiny-cuda-nn library, samples, and benchmarks
@@ -284,31 +308,79 @@ set(TCNN_SOURCES
 	src/object.cu
 	src/optimizer.cu
 	src/reduce_sum.cu
+	src/rtc_kernel.cu
 )
 
 if (MIN_GPU_ARCH GREATER 70)
 	list(APPEND TCNN_SOURCES src/fully_fused_mlp.cu)
 endif()
 
+list(APPEND TCNN_DEFINITIONS -DTCNN_MIN_GPU_ARCH=${MIN_GPU_ARCH})
+
 ###############################################################################
 # Linker / library
 ###############################################################################
 
-add_library(tiny-cuda-nn STATIC ${TCNN_SOURCES})
-target_compile_definitions(tiny-cuda-nn PUBLIC ${TCNN_DEFINITIONS})
-target_compile_options(tiny-cuda-nn PUBLIC $<$<COMPILE_LANGUAGE:CUDA>:${CUDA_NVCC_FLAGS}>)
-target_include_directories(tiny-cuda-nn PUBLIC
+include("${CMAKE_CURRENT_SOURCE_DIR}/dependencies/cmrc/CMakeRC.cmake")
+cmrc_add_resource_library(tiny-cuda-nn-resources NAMESPACE tcnn)
+list(APPEND TCNN_DEFINITIONS -DTCNN_CMRC)
+list(APPEND TCNN_LIBRARIES tiny-cuda-nn-resources)
+
+if (TCNN_BUILD_WITH_RTC)
+	# Fetch CUDA headers and folders that will be required by the runtime compiler
+	# and include those headers with the compiled binary of tcnn.
+	foreach (CUDA_INCLUDE_CANDIDATE IN LISTS CMAKE_CUDA_TOOLKIT_INCLUDE_DIRECTORIES)
+		if (EXISTS "${CUDA_INCLUDE_CANDIDATE}/cuda_fp16.h")
+			set(CUDA_INCLUDE "${CUDA_INCLUDE_CANDIDATE}")
+			break()
+		endif()
+	endforeach(CUDA_INCLUDE_CANDIDATE)
+
+	if (NOT CUDA_INCLUDE)
+		# If the CUDA include dir couldn't be found via CMAKE_CUDA_TOOLKIT_INCLUDE_DIRECTORIES,
+		# try a relative path w.r.t. the CUDA compiler binary as a last-ditch effort.
+		get_filename_component(CUDA_COMPILER_BIN "${CMAKE_CUDA_COMPILER}" DIRECTORY)
+		get_filename_component(CUDA_DIR "${CUDA_COMPILER_BIN}" DIRECTORY)
+		set(CUDA_INCLUDE "${CUDA_DIR}/include")
+	endif()
+
+	file(GLOB CUDA_HEADERS "${CUDA_INCLUDE}/cuda_fp16*" "${CUDA_INCLUDE}/vector*")
+	if (NOT CUDA_HEADERS)
+		message(WARNING "FP16 headers could not be found. JIT compilation will likely fail.")
+	endif()
+
+	file(GLOB_RECURSE TCNN_HEADERS "${CMAKE_CURRENT_SOURCE_DIR}/include/tiny-cuda-nn/*")
+	file(GLOB PCG32_HEADERS "${CMAKE_CURRENT_SOURCE_DIR}/dependencies/pcg32/*")
+
+	cmrc_add_resources(tiny-cuda-nn-resources WHENCE "${CUDA_INCLUDE}" ${CUDA_HEADERS})
+	cmrc_add_resources(tiny-cuda-nn-resources WHENCE "${CMAKE_CURRENT_SOURCE_DIR}/include" ${TCNN_HEADERS})
+	cmrc_add_resources(tiny-cuda-nn-resources WHENCE "${CMAKE_CURRENT_SOURCE_DIR}/dependencies" ${PCG32_HEADERS})
+endif()
+
+list(APPEND TCNN_INCLUDES
 	"include"
 	"dependencies"
 	"dependencies/cutlass/include"
 	"dependencies/cutlass/tools/util/include"
-	"dependencies/fmt/include"
 )
-target_link_libraries(tiny-cuda-nn PUBLIC ${CUDA_LIBRARIES} ${TCNN_LIBRARIES} fmt)
+
+add_library(tiny-cuda-nn STATIC ${TCNN_SOURCES})
+target_compile_definitions(tiny-cuda-nn PUBLIC ${TCNN_DEFINITIONS})
+target_compile_options(tiny-cuda-nn PUBLIC $<$<COMPILE_LANGUAGE:CUDA>:${CUDA_NVCC_FLAGS}>)
+target_include_directories(tiny-cuda-nn PUBLIC ${TCNN_INCLUDES})
+target_link_libraries(tiny-cuda-nn PUBLIC ${TCNN_LIBRARIES})
 
 if (TCNN_BUILD_EXAMPLES)
 	add_subdirectory("samples")
 endif()
+
 if (TCNN_BUILD_BENCHMARK)
 	add_subdirectory("benchmarks/image")
+	add_subdirectory("benchmarks/mlp")
+endif()
+
+if (TCNN_BUILD_TESTS)
+	enable_testing()
+	add_subdirectory(tests)
+	list(APPEND CMAKE_CTEST_ARGUMENTS "--output-on-failure")
 endif()
