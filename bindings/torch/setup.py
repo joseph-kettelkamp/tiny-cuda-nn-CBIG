@@ -203,6 +203,11 @@ def make_extension(compute_capability):
 		source_files = base_source_files
 
 	nvcc_flags = nvcc_flags + definitions
+
+	nvcc_flags += [
+		'-allow-unsupported-compiler',
+		'-Xcudafe', '--diag_suppress=esa_on_defaulted_function_ignored',
+	]
 	cflags = base_cflags + definitions
 
 	ext = CUDAExtension(
